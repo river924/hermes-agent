@@ -1,3 +1,4 @@
+import { transcriptRowIds } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
 import { type ChatMessage, chatMessageText, withUniqueToolCallIdsWithinMessage } from '@/lib/chat-messages'
 
 export interface DuplicateFinalCollapse {
@@ -53,4 +54,39 @@ export function collapseDuplicateFinalAfterToolInterim(
   next.splice(streamIndex, 1)
 
   return { keptId: prior.id, messages: next }
+}
+
+/** Prefer the committed final row when a history refresh and live stream overlap. */
+export function collapseLiveTwinOfPersistedFinal(
+  messages: ChatMessage[],
+  streamIndex: number,
+  options: {
+    completeMessage: (message: ChatMessage) => ChatMessage
+    finalRowId: number | null
+    lastUserIndex: number
+  }
+): DuplicateFinalCollapse | null {
+  if (streamIndex < 0 || options.finalRowId === null) {
+    return null
+  }
+
+  const finalRowId = options.finalRowId
+
+  const storedIndex = messages.findIndex(
+    (message, index) =>
+      index > options.lastUserIndex &&
+      index !== streamIndex &&
+      message.role === 'assistant' &&
+      transcriptRowIds(message).includes(finalRowId)
+  )
+
+  if (storedIndex < 0) {
+    return null
+  }
+
+  const next = messages.slice()
+  next[storedIndex] = options.completeMessage(messages[storedIndex])
+  next.splice(streamIndex, 1)
+
+  return { keptId: messages[storedIndex].id, messages: next }
 }

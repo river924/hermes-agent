@@ -36,7 +36,11 @@ import { broadcastTranscriptChanged } from '@/store/transcript-sync'
 
 import type { ClientSessionState } from '../../../types'
 
-import { collapseDuplicateFinalAfterToolInterim, type DuplicateFinalCollapse } from './collapse-duplicate-final'
+import {
+  collapseDuplicateFinalAfterToolInterim,
+  collapseLiveTwinOfPersistedFinal,
+  type DuplicateFinalCollapse
+} from './collapse-duplicate-final'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
 import { extendInterruptedReply } from './interrupted-reply'
@@ -857,12 +861,22 @@ export function useMessageStream({
         let collapsed: DuplicateFinalCollapse | null = null
 
         if (streamIndex >= 0) {
-          collapsed = collapseDuplicateFinalAfterToolInterim(prev, streamIndex, {
-            completeMessage,
-            finalText,
-            hasFailure: Boolean(failure) || Boolean(completionError),
-            interimBoundaryPending
-          })
+          const hasFailure = Boolean(failure) || Boolean(completionError)
+          const receiptRowId = persistedTurn?.final_assistant_row_id
+
+          const finalRowId =
+            !hasFailure && typeof receiptRowId === 'number' && Number.isSafeInteger(receiptRowId) && receiptRowId > 0
+              ? receiptRowId
+              : null
+
+          collapsed =
+            collapseLiveTwinOfPersistedFinal(prev, streamIndex, { completeMessage, finalRowId, lastUserIndex }) ??
+            collapseDuplicateFinalAfterToolInterim(prev, streamIndex, {
+              completeMessage,
+              finalText,
+              hasFailure,
+              interimBoundaryPending
+            })
           nextMessages = collapsed?.messages ?? settleAt(streamIndex)
         } else {
           const fallbackIndex = prev.findLastIndex(

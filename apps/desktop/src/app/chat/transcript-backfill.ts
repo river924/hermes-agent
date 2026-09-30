@@ -216,11 +216,31 @@ interface StoredRowSlot {
   leading: ChatMessage[]
 }
 
+/** Only text-only stored rows can be matched after compaction reassigns ids.
+ * Tool/reasoning/media parts carry identity not represented by visible text. */
+function logicalRowKey(message: ChatMessage): string | undefined {
+  return message.rowId === undefined ||
+    message.timestamp === undefined ||
+    message.parts.some(part => part.type !== 'text')
+    ? undefined
+    : JSON.stringify([message.role, message.timestamp, chatMessageText(message)])
+}
+
+/** Committed page rows supersede the window's optimistic prompt and reply. */
+function isUnstoredLiveTurnRow(message: ChatMessage): boolean {
+  return (
+    message.rowId === undefined &&
+    ((message.role === 'user' && message.id.startsWith('user-')) ||
+      (message.role === 'assistant' && (message.pending === true || message.id.startsWith('assistant-stream-'))))
+  )
+}
+
 /**
  * Stored-id merge for a page that overlaps the window but does not anchor in
  * front of it. A row with no stored id travels with the next stored row after
- * it, so a page-local fold stays in front of the row it preceded. Rows with no
- * stored id after the last stored row stay at the end (page first, then live).
+ * it, so a page-local fold stays in front of the row it preceded. The page's
+ * trailing unstored rows stay at the end; the committed page replaces local
+ * optimistic prompt/reply twins, which the pending-turn reconciler handles.
  */
 function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessage[]): ChatMessage[] {
   // Compaction, rewind, or a different session arrives as new stored ids.
@@ -230,6 +250,8 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
   }
 
   const refreshedIds = new Set(refreshedTail.map(message => message.id))
+  const refreshedRowIds = durableRowIds(refreshedTail)
+  const refreshedLogicalRows = new Set(refreshedTail.map(logicalRowKey).filter(key => key !== undefined))
   const byRowId = new Map<number, StoredRowSlot>()
 
   const place = (messages: ChatMessage[], fresh: boolean): ChatMessage[] => {
@@ -246,8 +268,12 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
       }
 
       const existing = byRowId.get(message.rowId)
+      const key = logicalRowKey(message)
 
-      if (!fresh && existing) {
+      const reinserted =
+        !fresh && !refreshedRowIds.has(message.rowId) && key !== undefined && refreshedLogicalRows.has(key)
+
+      if (!fresh && (existing || reinserted)) {
         pending = []
 
         continue
@@ -263,7 +289,7 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
     return pending
   }
 
-  const previousTrailing = place(previous, false)
+  const previousTrailing = place(previous, false).filter(message => !isUnstoredLiveTurnRow(message))
   const refreshedTrailing = place(refreshedTail, true)
 
   const stored = [...byRowId.entries()]
